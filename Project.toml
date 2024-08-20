@@ -1,0 +1,4 @@
+name = "jMPGMRES"
+uuid = "65b29037-3578-4016-851b-b8088a9ecd05"
+authors = ["matan <matantheman@gmail.com>"]
+version = "0.1.0"
