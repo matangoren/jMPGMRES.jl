@@ -30,7 +30,12 @@ function fullmultiprecondition(pre,Q)
 end
 
 function multipreconditionvec(pre,Q)
-    n,m = size(Q);
+    m = 1
+    if length(size(Q)) == 1
+        n = size(Q,1)
+    else
+        n,m = size(Q)
+    end
     k = length(pre);
     z = zeros(ComplexF64, (n,k));
     for i=1:m
