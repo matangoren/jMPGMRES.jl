@@ -1,17 +1,24 @@
 using LinearAlgebra
+using Random
+using MAT
 
 include("utils.jl")
 
 function fullmultiprecondition(pre,Q)
     lpre = length(pre);
-    [lA,lQ] = size(Q);
-    z = zeros(Float64, (lA,lQ*lpre));
+    lQ = 1
+    if length(size(Q)) == 1
+        lA = size(Q,1)
+    else
+        lA,lQ = size(Q)
+    end
+    z = zeros(ComplexF64, (lA,lQ*lpre));
     ind = 1;
     ivec = 1:lQ*lpre;
     for i=1:lpre
         if isa(pre[1],Function)
             for j = 1:lQ
-                z[:,ivec(ind)]=pre[i](Q[:,j]);
+                z[:,ivec[ind]]=pre[i](Q[:,j]);
                 ind = ind+1;
             end
         else
@@ -22,7 +29,42 @@ function fullmultiprecondition(pre,Q)
     return z
 end
 
-function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float64,size(b)),store_Z=false,test_orth=false,save_mats=false)
+function multipreconditionvec(pre,Q)
+    n,m = size(Q);
+    k = length(pre);
+    z = zeros(ComplexF64, (n,k));
+    for i=1:m
+        if isa(pre[i],Function)
+            z[:,i] = pre[i](Q[:,i]);
+        else
+            z[:,i] = pre[i]\Q[:,i];
+        end
+    end
+    for i = m+1 : length(pre)
+        if isa(pre{i},Function)
+            z[:,i] = pre[i](Q[:,mod(i,m)+1]);
+        else
+            z[:,i] = pre[i]\Q[:,mod(i,m)+1];
+        end
+    end
+    return z
+end
+
+function increase_ind_V(ind_V,k)
+    sizeInd_V = length(ind_V);
+    if sizeInd_V < k
+        new_ind_V = zeros(k);
+        new_ind_V[1:sizeInd_V] = ind_V;
+        for jv = sizeInd_V + 1:k
+            new_ind_V[jv] = ind_V[mod(jv,sizeInd_V)+1];
+        end
+    else
+        new_ind_V = ind_V;
+    end
+    return new_ind_V
+end
+
+function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxits=length(b),x0=zeros(Float64,size(b)),store_Z=false,test_orth=false,save_mats=false)
     # make sure b is a vector
     if isa(b,Vector) == false
         error("Right hand side b must be a vector")
@@ -32,7 +74,7 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
     # get type of A
     if isa(A,Array)
         lA,wA = size(A);
-        if lA ~= wA
+        if lA != wA
             error("The input matrix A must be square")
         end    
         if lb != lA
@@ -61,14 +103,14 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
         error("The tolerance must be a numeric value or vector with at most two entries")
     end
 
-    if minimim(tol) < 0
+    if minimum(tol) < 0
         error("Tolerance values should be non-negative")
     elseif maximum(tol) <= 0
         error("At least one tolerance value should be strictly positive")
     end
 
-    if maxit >= 10000
-        @warn "maxits was unspecified and will be set to the length of b. For large problem sizes specify maxit to avoid allocation of a large amount of memory"
+    if maxits >= 10000
+        @warn "maxits was unspecified and will be set to the length of b. For large problem sizes specify maxits to avoid allocation of a large amount of memory"
     end
 
     # validate x0
@@ -81,7 +123,7 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
         error("Initial guess x0 must be a vector")
     end
 
-    small = 10*eps();
+    SMALL = 10*eps();
 
     if isa(P, Vector)
         k = length(P)
@@ -101,9 +143,11 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
         end
     end
 
+    nmaxits = Int64(nmaxits);
+
     indvar = min(lb,nmaxits);
     if store_Z
-        Z = zeros(Float64, (lb,indvar));
+        Z = zeros(ComplexF64, (lb,indvar));
     else
         #######################################################################
         #!! We don't need to store Z, as Z_k = [P_1^{-1} V_k ... P_t^{-1} V_k]#
@@ -113,19 +157,20 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
         #!! V_index and yk_index                                              #
         #######################################################################
 
-        end_V = Array{Any}(undef, (k,1)); # similar to Matlab's cell array
-        end_V[:] .= 0;
-        Zinfo = {"yk_index": zeros(nmaxits,1), "V_index": zeros(nmaxits,1), "end_V": end_V}
+        # end_V = Array{Any}(undef, (k,1)); # similar to Matlab's cell array
+        # end_V[:] .= 0;
+        # Zinfo = {"yk_index": zeros(nmaxits,1), "V_index": zeros(nmaxits,1), "end_V": end_V}
+        Zinfo = [ZinfoInstance(nmaxits,0) for _=1:k]
         lastV = 0
     end
 
-    V = zeros(Float64, (lb,indvar+1));
+    V = zeros(ComplexF64, (lb,indvar+1));
     H = zeros(Float64, (indvar+1,indvar));
     resvec = zeros(Float64, indvar);
     mvecs = zeros(Float64, indvar);
     c = zeros(Float64, indvar);
     s = zeros(Float64, indvar);
-    rhs = zeros(Float64, indvar);
+    rhs = zeros(ComplexF64, indvar);
 
     lindep_flag = 0;    # set the linear dependence flag - set to 1 if H_(p+1,p) = 0
 
@@ -152,7 +197,7 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
 
     if !store_Z
         VforZ = 1;
-        ind_V = ones(Float64, (k,1));
+        ind_V = ones(Int64, k);
     end
 
     pp = 0;     # initialize a concurrent index
@@ -192,6 +237,188 @@ function mpgmres(A,b,P;type=TypeMP(),tol=[1e-6,0],maxit=length(b),x0=zeros(Float
         rhs[pp+1] = -s[pp]*rhs[pp];
         rhs[pp] = conj(c[pp])*rhs[pp];
 
+        # test_lindep_block;
+        if (lindep_flag==1)&&((abs(rhs[pp+1]) >= max(tol[1]*nr,SMALL))||(isnan(abs(rhs[pp+1]))))&&(nVk>1) # the last column of Z is dependent on the others
+            println("Column of Z linearly dependent...removing")
+            pp = pp-1;          # reduce index by 1
+            lindep_flag = 0;    # reset linear dependence flag
+            rhs = rhs_old;      # replace rhs
+        else
+            nVk = nVk + 1;
+            if store_Z
+                Z[:,pp] = Z_temp[:,z_it[2]+1];
+            else
+                ik = Int64(ceil(nVk/VforZ)); # find which preconditioner
+                Zinfo[ik].end_V += 1;
+                Zinfo[ik].yk_index[Zinfo[ik].end_V] = pp;
+                if isa(Zinfo[ik].V_index,Cell) # then type.col == 1, and cells are involved
+                    Zinfo[ik].V_index[Zinfo[ik].end_V] = ind_V;
+                    Zinfo[ik].wt[Zinfo[ik].end_V] = wt;
+                    lastV = max(lastV,maximum(Zinfo[ik].V_index[Zinfo[ik].end_V]));
+                else
+                    Zinfo[ik].V_index[Zinfo[ik].end_V] = ind_V[nVk];
+                    lastV = max(lastV,Zinfo[ik].V_index[Zinfo[ik].end_V]);
+                end
+
+            end
+            if lindep_flag==1  # we have a lucky breakdown
+                z_it[1] += 1;
+                resvec[z_it[1]] = abs(rhs[pp+1])/nr;    # save residual to resvec
+                println("MPGMRES converged -- lucky breakdown!")
+                break
+            end
+            V[:,pp+1] = w/nw;       # set new basis vector V_{p+1}
+            if test_orth            # test if V's are still orthogonal (see note above)
+                S = triu(V'*V,1); 
+                println("Measure of loss of orthog.")
+                # ADD print of norm...?
+                # norm((eye(size(S)) + S)\S)
+            end
+        end
+        z_it[2] += 1;         # update the index column of Z we're working on
+        
+        if z_it[2] == Zk
+            resvec[z_it[1]+1] = abs(rhs[pp+1])/nr;    # save residual to resvec
+            
+            # test convergence
+            if resvec[z_it[1]+1] <= max(tol[1],tol[2]/nr)
+                println("MPGMRES converged!")
+                z_it[1] += 1;
+                break
+            end
+            # multiprecondition
+            if nVk == 0
+                error("All current search directions are linearly dependent on the previous ones. Re-run with a different truncation rule or starting vector")
+            end
+
+            if type.type == "full"
+                ind_V = repeat(pp+1-nVk+1:pp+1,k);
+                Z_temp = fullmultiprecondition(P,V[:,pp+1-nVk+1:pp+1]);
+                Zk = k*nVk;
+                if ~store_Z
+                    VforZ = nVk;
+                end
+                nVk = 0; # reset nV
+            else # type.type == "trunc"
+                if type.col
+                    if type.method == "inorder" # P_i^{-1}Ve_i
+                        ind_V = pp+1 .+ (1-nVk:0);
+                        Z_temp = multipreconditionvec(P,V[:,ind_V]);
+                        if ~store_Z
+                            VforZ = 1;
+                            ind_V = increase_ind_V(ind_V,k);
+                        end
+                    elseif type.method == "reverse" # % P_i^{-1}Ve_j, j = n-i+1
+                        ind_V = pp+1 .+ (0:-1:1-nVk) # fliplr(pp+1 + (1-nVk:0));
+                        Z_temp = multipreconditionvec(P,V[:,ind_V]);
+                        if ~store_Z
+                            VforZ = 1;
+                            ind_V = increase_ind_V(ind_V,k);
+                        end
+                    elseif type.method == "alternate" # swaps between previous two cases
+                        if rem(pp,2) == 0
+                            ind_V = (pp+1):-1:(pp+1-nVk+1) # fliplr(pp+1-nVk+1:pp+1);
+                            Z_temp = multipreconditionvec(P,V[:,ind_V]);
+                            if ~store_Z
+                                ind_V = increase_ind_V(ind_V,k);
+                            end
+                        else
+                            ind_V = pp+1-nVk+1:pp+1;
+                            Z_temp = multipreconditionvec(P,V[:,ind_V]);
+                            if ~store_Z
+                                VforZ = 1;
+                                ind_V = increase_ind_V(ind_V,k);
+                            end
+                        end
+                    elseif type.method == "random" # P_i^{-1}Ve_j, j random
+                        order = randperm(nVk);
+                        ind_V = zeros(nVk);
+                        for iv = 1:nVk
+                            ind_V[iv] = pp+1-nVk+order[iv];
+                        end
+                        Z_temp = multipreconditionvec(P,V[:,ind_V]);
+                        if ~store_Z
+                            VforZ = 1;
+                            ind_V = increase_ind_V(ind_V,k);
+                        end
+                    else
+                        error("Unsupported value of type.method")  
+                    end
+                    Zk = k; nVk = 0;      # update size of Z_k and current size of V_k
+                else # type.col = False
+                    if (z_it[1] == 1) && (~store_Z) # update V_index so it's a cell array, not a vector                    
+                        for ii = 1:k
+                            Zinfo[ii].V_index = Cell(nmaxits);
+                            Zinfo[ii].V_index[1] = 1;
+                            Zinfo[ii].wt = Cell(nmaxits);
+                            Zinfo[ii].wt[1] = 1;
+                        end
+                    end
+                    if type.method == "sum" # sum the columns
+                        VforZ = 1;
+                        ind_V = pp+1-nVk+1:pp+1;
+                        wt = ones(nVk);
+                        v_temp = V[:,ind_V]*wt;
+                        Z_temp = fullmultiprecondition(P,v_temp);
+                    elseif type.method == "random" # sum the columns with random weights
+                        ind_V = pp+1-nVk+1:pp+1;
+                        wt = rand(nVk);
+                        v_temp = V[:,ind_V]*wt;
+                        Z_temp = fullmultiprecondition(P,v_temp);
+                    else
+                        error("Unsupported value of type.method") 
+                    end
+                    Zk = k; nVk = 0;      # update size of Z_k and current size of V_k
+                end
+            end
+            z_it[1] += 1;
+            mvecs[z_it[1]+1]= mvecs[z_it[1]];
+            z_it[2] = 0;    
+        end
+
+        if save_mats
+            matwrite("mpgmres_const.mat",Dict("V" => V, "H" => H, "Z" => Z));
+        end
+    
     end
 
+    if save_mats
+        matwrite("mpgmres_b_const.mat",Dict("V" => V, "H" => H, "Z" => Z));
+    end
+    yk = H[1:pp,1:pp]\rhs[1:pp];
+    if store_Z
+        x = x0 + Z[:,1:pp]*yk;
+    else
+        x = x0;
+        if isa(Zinfo[1].V_index,Cell) # then type.col = 0
+            for ii = 1:k
+                Vyk_i = zeros(lb);
+                for iv = 1:Zinfo[ii].end_V # get the summed matrix
+                    Vyk_i = Vyk_i + (V[:,Zinfo[ii].V_index[iv]]*Zinfo[ii].wt[iv])*yk[Zinfo[ii].yk_index[iv]];
+                end
+                if isa(P[ii],Function)
+                    x += P[ii](Vyk_i);
+                else
+                    x += P[ii]\Vyk_i;
+                end
+                
+            end
+        else
+            for ii = 1:k
+                Vyk_i = V[:,Zinfo[ii].V_index[1:Zinfo[ii].end_V]]*yk[Zinfo[ii].yk_index[1:Zinfo[ii].end_V]];
+                if isa(P[ii],Function)
+                    x += P[ii](Vyk_i);
+                else
+                    x += P[ii]\Vyk_i;
+                end
+            end
+        end
+    end
+
+    resvec = resvec[1:z_it[1]];
+    mvecs = mvecs[1:z_it[1]];
+    iter = length(resvec) - 1;
+    relres = resvec[end];
+
+    return x,relres,iter,resvec,mvecs
 end
